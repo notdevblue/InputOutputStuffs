@@ -1,3 +1,5 @@
+// https://www.ibm.com/docs/en/i/7.3?topic=designs-example-nonblocking-io-select
+
 #include <cstdio>
 #include <cstdlib>
 #include <sys/ioctl.h>
@@ -112,17 +114,78 @@ int main() {
                 desc_ready -= 1; // 하나 읽었음.
 
                 if (i == listen_sd) { // listen 동작이 어떻게 되는 걸까
+                    // 아마도 파일 디스크립터 숫자가 listen_sd 와 같은가로 확인하는듯.
+                    // 그래서 FD_ISSET 에서 nonzero 반환했을때 그걸로 뭐시기뭐시기 이러쿵저러쿵
                     printf("    Listening socket is readable\n");
 
                     do {
-                        // https://www.ibm.com/docs/en/i/7.3?topic=designs-example-nonblocking-io-select
-                        // ongoing
+                        new_sd = accept(listen_sd, NULL, NULL);
+                        if (new_sd < 0) {
+                            if (errno != EWOULDBLOCK) {
+                                perror("    accept() failed");
+                                end_server = true;
+                            }
+                            break;
+                        }
+
+                        printf("    New incomming connection - %d\n", new_sd);
+                        FD_SET(new_sd, &master_set); // 새 커넥션 master_set 에 추가함
+                        if (new_sd > max_sd) {
+                            max_sd = new_sd;
+                        }
                     } while (new_sd != -1);
                 }
+                else { // listen_sd 말고 다른 유저 커넥션 set
+                    printf("    Descriptor %d is readable\n", i);
+                    close_conn = false;
+
+                    do {
+                        rc = recv(i, buffer, sizeof(buffer), 0);
+                        if (rc < 0) {
+                            if (errno != EWOULDBLOCK) { // wouldblock 말고 다른 에러
+                                perror("    recv() failed");
+                                close_conn = true;
+                            }
+                            break;
+                        }
+
+                        if (rc == 0) { // closed
+                            printf("    Connection closed\n");
+                            close_conn = true;
+                            break;
+                        }
+
+                        rc = send(i, buffer, sizeof(buffer), 0);
+                        if (rc < 0) {
+                            perror("    send() failed");
+                            close_conn = true;
+                            break;
+                        }
+
+                    } while (true);
+
+                    if (close_conn) {
+                        close(i);
+                        FD_CLR(i, &master_set);
+                        if (i == max_sd) {
+                            while (FD_ISSET(max_sd, &master_set) == false) {
+                                max_sd -= 1;
+                            }
+                        }
+                    }
+
+                } // 유저 커넥션 set (else)
             }
         }
 
-    } while (true);
+    } while (end_server == false);
+
+
+    for (i = 0; i <= max_sd; ++i) {
+        if (FD_ISSET(i, &master_set)) {
+            close(i);
+        }
+    }
 
     return 0;
 }
